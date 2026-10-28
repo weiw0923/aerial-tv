@@ -2,6 +2,7 @@ package app.orchard.tv.guard
 
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.media.tv.TvContract
 import android.media.tv.TvInputInfo
 import android.media.tv.TvInputManager
@@ -21,7 +22,13 @@ import java.util.concurrent.Executors
 internal object CecHome {
     private val sender = Executors.newSingleThreadExecutor()
 
-    private fun prefs(context: Context) = context.getSharedPreferences("system", Context.MODE_PRIVATE)
+    // Before the user unlocks, the credential-encrypted copy throws IllegalStateException, and the
+    // guard both binds and receives window changes while locked (YunOS MagicBox M31H, Android 10),
+    // crashing the whole guard process. The Direct Boot copy is empty until then, which simply
+    // leaves this opt-in feature off until unlock.
+    private fun prefs(context: Context): SharedPreferences =
+        if (GuardSetup.isUserUnlocked(context)) context.getSharedPreferences("system", Context.MODE_PRIVATE)
+        else context.createDeviceProtectedStorageContext().getSharedPreferences("system", Context.MODE_PRIVATE)
 
     // This is an Amlogic raw-frame ABI, not Linux's unrelated /dev/cec0 ioctl ABI.
     // X7 version 5 is verified; other versions of this ABI require device testing.

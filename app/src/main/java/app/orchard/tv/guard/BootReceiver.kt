@@ -37,6 +37,7 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     private fun onBoot(context: Context, action: String) {
+        StandbyRevivalReceiver.arm(context)
         GuardSetup.ensureEnabled(context)
         if (action == Intent.ACTION_LOCKED_BOOT_COMPLETED) return
         GuardSetup.rescanIfMissing(context)

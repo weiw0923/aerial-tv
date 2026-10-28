@@ -2,6 +2,7 @@ package app.orchard.tv.guard
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.ActivityManager
 import android.app.AppOpsManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
@@ -22,9 +23,17 @@ import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.PixelFormat
 import android.hardware.input.InputManager
 import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.View
+import android.view.WindowManager
+import android.widget.ImageView
+import app.orchard.tv.wallpaper.Wallpapers
+import java.io.File
 import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
@@ -120,22 +129,28 @@ class HomeGuardService : AccessibilityService() {
     private val foregroundCheck = object : Runnable {
         override fun run() {
             handler.postDelayed(this, FOREGROUND_POLL_MS)
-            // Not skipped where Aerial is the default Home, for the same reason as the Home key:
-            // Panasonic DX01C (Skyworth-made, Tianci, Android 6) shows its own launcher at power-on
-            // and on the Home key whatever Home resolves to.
+            // Not skipped where Aerial is the default Home: Panasonic DX01C shows its own launcher
+            // at power-on and on the Home key whatever Home resolves to; on YunOS (MagicBox M31H)
+            // a stock page that sat down before this process bound never raises a window change,
+            // and only this poll sees it.
             if (screenOff || !GuardSetup.isUserUnlocked(this@HomeGuardService)) return
             if (SystemClock.uptimeMillis() < allowStockUntil) return
             val (window, at) = foreground() ?: return
             if (at <= foregroundTakenAt) return
             if (stockHomes.isEmpty()) refreshStockHomes()
-            // Its home screen only, as for window changes: PatchWall's children's mode, opened
-            // from its tile, is in the same package and stays.
+            // Any screen of a stock launcher on the MagicBox M31H (its tab pages displaced Aerial
+            // while the guard was deaf); elsewhere the launcher's home screen only, as for window
+            // changes (PatchWall's children's mode stays), plus PatchWall's boot page. The package
+            // filter is load-bearing: without it every app the viewer opens reads as a launcher
+            // and gets Home-ed out; Aerial's own package is a Home too, and Home-ing over itself
+            // is churn.
             val (pkg, cls) = window
             val bootCover = pkg == PATCHWALL && cls == PATCHWALL_BOOT && SystemClock.elapsedRealtime() < BOOT_WINDOW_MS
-            if (cls !in stockHomes[pkg].orEmpty() && !bootCover) return
+            if (pkg !in stockHomes || pkg == packageName) return
+            if (cls !in stockHomes[pkg].orEmpty() && !bootCover && !mKeyDevice) return
             foregroundTakenAt = at
             if (SystemClock.uptimeMillis() - broughtBackAt < 1_000) return
-            Log.i(TAG, "stock launcher $pkg in front by usage stats; bringing Aerial back")
+            Log.i(TAG, "stock launcher ${window.first} in front by usage stats; bringing Aerial back")
             goHome(woke = SystemClock.elapsedRealtime() - screenOnAt < WAKE_WINDOW_MS)
         }
     }
@@ -191,6 +206,9 @@ class HomeGuardService : AccessibilityService() {
     /** Whether any window change has reached this binding. */
     private var sawEvent = false
 
+    /** Whether Aerial was already brought up during this process's locked (Direct Boot) phase. */
+    private var broughtUpBeforeUnlock = false
+
     /**
      * Whether another enabled service filters keys without being marked default (flagDefault), up
      * to Android 6. There a key goes to one service only: AccessibilityManagerService
@@ -213,8 +231,10 @@ class HomeGuardService : AccessibilityService() {
      */
     private val deafCheck = Runnable {
         if (stockHomes.isEmpty()) refreshStockHomes()
-        if (sawEvent || deafRetried) return@Runnable
-        deafRetried = true
+        // With the usage-stats poll watching the front, a quiet binding needs no accessibility
+        // restart: quiet is not deaf (a page that sat down before the bind raises no event).
+        if (sawEvent || deafRetries >= 5 || usageStatsAllowed(this)) return@Runnable
+        deafRetries++
         Log.i(TAG, "no window change since bound; switching accessibility off and on")
         GuardSetup.restartAccessibility(this)
     }
@@ -228,6 +248,9 @@ class HomeGuardService : AccessibilityService() {
      */
     private val userUnlocked = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            // The boot-phase cover comes off now: the take-overs run unlocked, and the next
+            // Aerial front hides it anyway. A short grace keeps the transition clean.
+            handler.postDelayed({ hideWakeCover() }, 2_000)
             // Before unlock only Direct Boot aware launchers resolve.
             refreshStockHomes()
             watchCecInput()
@@ -244,15 +267,146 @@ class HomeGuardService : AccessibilityService() {
         }
     }
 
+    /**
+     * Kills the stock launchers' background processes, so a warm process cannot front its own page
+     * at wake (YunOS MagicBox M31H fronts its tab every wake otherwise). An ordinary app may kill
+     * background processes of others with KILL_BACKGROUND_PROCESSES; processes the system still
+     * needs are left alone by it. Opened on purpose, the launcher cold-starts normally.
+     */
+    private fun starveStockLaunchers(when_: String) {
+        val am = getSystemService<ActivityManager>() ?: return
+        for (pkg in stockHomes.keys) {
+            if (pkg == packageName) continue
+            runCatching { am.killBackgroundProcesses(pkg) }
+                .onSuccess { Log.i(TAG, "killed the stock launcher $pkg's background process at $when_") }
+                .onFailure { Log.w(TAG, "could not kill $pkg at $when_", it) }
+        }
+    }
+
+    /**
+     * Holds the CPU awake while the screen is off, so standby never becomes a suspend this box's
+     * IR cannot wake (YunOS MagicBox M31H: after the stock launcher that used to manage standby
+     * was taken out, a real suspend left only the power cable; hardware IR wake is not armed on
+     * this board). With the CPU awake the system's own power-key wake works as usual, and network
+     * stays up. A wakelock outlives the freezer: even a frozen holder keeps suspend at bay.
+     */
+    private var standbyKeeper: PowerManager.WakeLock? = null
+
+    /**
+     * A tick every half second while the screen is off. This firmware's goToSleep clears wake
+     * locks on the way down, so a held lock cannot keep the standby shallow; a process waking on
+     * a timer can, and on YunOS MagicBox M31H it does (a 1 Hz shell ticker kept the box remote-
+     * wakeable and network-alive for 16 minutes where a PARTIAL_WAKE_LOCK died at once). The
+     * remote's power key then wakes the display through the ordinary system path.
+     */
+    private val stayShallow = object : Runnable {
+        var ticks = 0
+        override fun run() {
+            if (!screenOff) return
+            // Real work, however small, so the tick cannot be optimized away: the process must
+            // wake and run each time, which is what keeps the suspend shallow.
+            ticks++
+            if (System.nanoTime() == Long.MIN_VALUE || ticks % 120 == 0) {
+                Log.i(TAG, "standby heartbeat alive, tick=$ticks")
+            }
+            handler.postDelayed(this, 500)
+        }
+    }
+
+    private fun keepAwakeWhileScreenOff(off: Boolean) {
+        val pm = getSystemService<PowerManager>() ?: return
+        if (off) {
+            if (standbyKeeper == null) {
+                @Suppress("DEPRECATION")
+                standbyKeeper = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "aerial:standby").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+                Log.i(TAG, "screen off; holding the CPU awake so the remote can wake the box")
+                handler.removeCallbacks(stayShallow)
+                handler.post(stayShallow)
+            }
+        } else {
+            standbyKeeper?.let { runCatching { it.release() } }
+            standbyKeeper = null
+            handler.removeCallbacks(stayShallow)
+        }
+    }
+
+    /**
+     * Full-screen black cover shown at wake, so the stock launcher's splash (fronted by the
+     * firmware's policy layer on every SCREEN_ON, MagicBox M31H) never paints. Non-focusable and
+     * non-touchable so remote keys keep flowing; removed as soon as Aerial is front again, or
+     * after WAKE_COVER_MAX_MS whatever happens.
+     */
+    private var wakeCover: View? = null
+
+    private fun showWakeCover() {
+        if (wakeCover != null || !Settings.canDrawOverlays(this)) return
+        val wm = getSystemService<WindowManager>() ?: return
+        // The cover wears Aerial's own baked wallpaper (the exact picture Home shows), so the
+        // wake reads as "already there" instead of a black gap. Falls back to black when the
+        // wallpaper mode has no backdrop (Auto/Follow App).
+        val view: View = runCatching {
+            val baked = File(filesDir, "backdrop/home.jpg").takeIf { it.exists() }
+                ?: Wallpapers.lockedBootBackdrop(this)?.takeIf { it.exists() }
+            baked?.let { f ->
+                BitmapFactory.decodeFile(f.path)?.let { bmp ->
+                    ImageView(this).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        setImageBitmap(bmp)
+                    }
+                }
+            }
+        }.getOrNull() ?: View(this).apply { setBackgroundColor(Color.BLACK) }
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.OPAQUE,
+        )
+        runCatching {
+            wm.addView(view, lp)
+            wakeCover = view
+            Log.i(TAG, "wake cover shown")
+        }
+    }
+
+    private fun hideWakeCover() {
+        handler.removeCallbacks(hideWakeCoverRunnable)
+        val view = wakeCover ?: return
+        wakeCover = null
+        runCatching { getSystemService<WindowManager>()?.removeView(view) }
+        Log.i(TAG, "wake cover removed")
+    }
+
+    private val hideWakeCoverRunnable = Runnable { hideWakeCover() }
+
     private val screenOn = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             screenOff = intent.action == Intent.ACTION_SCREEN_OFF
             updateKeyFilter()
+            keepAwakeWhileScreenOff(screenOff)
             if (screenOff) {
+                hideWakeCover()
+                starveStockLaunchers("standby")
                 BootOpen.noteScreenOff(this@HomeGuardService)
                 if (GuardSetup.offInStandby(this@HomeGuardService)) GuardSetup.stepOutForStandby(this@HomeGuardService)
                 return
             }
+            // The warm process of the stock launcher fronts its own tab a moment into the wake
+            // (YunOS MagicBox M31H), before any window change could be answered. Killed here too,
+            // a cold start cannot front itself; the system then starts the default Home.
+            starveStockLaunchers("wake")
+            // The firmware's policy layer starts its stock launcher on every SCREEN_ON, and its
+            // splash paints for the second or two before the take-over covers it. A full-screen
+            // non-interactive overlay thrown up now hides that paint completely: the viewer sees
+            // black — as with any TV waking — until Aerial is in front.
+            showWakeCover()
+            handler.postDelayed({ hideWakeCover() }, WAKE_COVER_MAX_MS)
             // Firmwares put their own launcher back in front while the TV is in standby, and no
             // window change follows on wake. Look once things have settled after the screen lights.
             screenOnAt = SystemClock.elapsedRealtime()
@@ -435,6 +589,11 @@ class HomeGuardService : AccessibilityService() {
             runCatching { getSystemService<InputManager>()?.registerInputDeviceListener(gamepadListener, handler) }
             lookForGamepads()
         }
+        // A revival while the screen is already off (the firmware killed the guard during
+        // standby) must re-arm the shallow-standby heartbeat at once, or the box slides into
+        // deep suspend with no remote wake until the next screen-on.
+        keepAwakeWhileScreenOff(screenOff)
+        StandbyRevivalReceiver.arm(this)
         updateKeyFilter()
         watchCecInput()
         volumeSeen = volumeNow()
@@ -444,15 +603,14 @@ class HomeGuardService : AccessibilityService() {
         contentResolver.registerContentObserver(Settings.Global.getUriFor(Settings.Global.ADB_ENABLED), false, adbObserver)
         contentResolver.registerContentObserver(Settings.Secure.getUriFor("screensaver_components"), false, screensaverObserver)
         GuardSetup.ensureAdb(this)
-        // Not only at boot: a guard switched on later was just as deaf, for good, until Aerial was
-        // stopped or accessibility switched off and on (MiTV4-ANSM0, issue #381).
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.M) handler.postDelayed(deafCheck, DEAF_AFTER_MS)
+        // Not only at boot, and not only up to Android 6: a guard bound after a standby kill was
+        // just as deaf, for good, until accessibility was switched off and on — seen on Android 10
+        // too (YunOS MagicBox M31H, after every standby revival), like MiTV4-ANSM0 in issue #381.
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.M || mKeyDevice) handler.postDelayed(deafCheck, DEAF_AFTER_MS)
         // Hisense VIDAA's own launcher (聚好看, com.jamdeo.tv.vod) raises no window change to
-        // third-party services on any version seen, while other apps' events arrive; usage stats
-        // record its moves to the front as on PatchWall (Vidda C1S, MT9669, Android 9, PR #545,
-        // checked by the author with a local build). Only where that launcher is a stock home, so
-        // other TVs past Android 6 are not polled.
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.M || VIDAA_LAUNCHER in stockHomes) {
+        // third-party services on any version seen; on the MagicBox M31H the same applies after
+        // every standby revival. Where either holds, watch the front by usage stats.
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.M || VIDAA_LAUNCHER in stockHomes || mKeyDevice) {
             handler.removeCallbacks(foregroundCheck)
             if (usageStatsAllowed(this)) handler.post(foregroundCheck)
             else Log.i(TAG, "usage stats not allowed; not watching the front by them")
@@ -621,7 +779,10 @@ class HomeGuardService : AccessibilityService() {
         // the system, and Aerial comes back after Android's 5 s hold.
         val padGame = gamepadAttached && !aerialResumed && lastWindow?.first.let { it != null && it != packageName && it !in stockHomes }
         val wanted = !keysPassThrough && !screenOff && !padGame && (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R || aerialInFront)
-        val homeWanted = wanted && !isDefaultHome()
+        // On the M-key MagicBox the filter must stay armed even as the default Home: it is what
+        // consumes the remote's M key before the firmware's policy turns it into a stock-launcher
+        // deep link. Everything not consumed still flows as if unfiltered.
+        val homeWanted = wanted && (!isDefaultHome() || mKeyDevice)
         val cecWanted = !screenOff && CecHome.active(this, lastWindow?.first)
         filteringForCecOnly = cecWanted && !homeWanted
         var want = if (homeWanted || cecWanted) info.flags or flag else info.flags and flag.inv()
@@ -677,6 +838,13 @@ class HomeGuardService : AccessibilityService() {
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
         if (!GuardSetup.isUserUnlocked(this)) return false
+        // MagicBox M31H: the remote's M key is KEYCODE_F10/F11 (140/141), and the policy layer
+        // broadcasts "youku.action.MKey" for it, fronting the stock launcher's tab page
+        // ("M键生活广场") over whatever is running. Consumed here, before the policy sees it.
+        if (mKeyDevice && (event.keyCode == 140 || event.keyCode == 141)) {
+            if (event.action == KeyEvent.ACTION_UP) Log.i(TAG, "M key consumed")
+            return true
+        }
         if (event.keyCode in VOLUME_KEYS) return if (filteringForCecOnly) false else takeVolumeKey(event)
         // Any key that is done: whatever it did to the volume (Control Center's slider) is in.
         if (event.action == KeyEvent.ACTION_UP) volumeSeen = volumeNow()
@@ -896,12 +1064,35 @@ class HomeGuardService : AccessibilityService() {
         val before = lastWindow?.first
         if (isActivity(pkg, cls)) {
             lastWindow = pkg to cls
+            if (pkg == packageName && GuardSetup.isUserUnlocked(this)) hideWakeCover()
             if (!CecHome.active(this, pkg)) {
                 lastCecHomeUp = Long.MIN_VALUE / 2
                 handler.removeCallbacks(cecHomeHold)
             }
         }
-        if (!GuardSetup.isUserUnlocked(this)) return
+        if (!GuardSetup.isUserUnlocked(this)) {
+            // YunOS (China Mobile MagicBox M31H, Android 10) cold-boots its own launcher before
+            // the user unlocks, and the unlock the take-overs wait for comes ~12 s later. The
+            // stock launcher's window is still seen here while locked, and MainActivity is Direct
+            // Boot aware, so Aerial can be brought up at once. Once per process: after the unlock
+            // the ordinary take-over holds on to Home.
+            if (!broughtUpBeforeUnlock && SystemClock.elapsedRealtime() < BOOT_WINDOW_MS && pkg in stockHomes) {
+                broughtUpBeforeUnlock = true
+                Log.i(TAG, "stock launcher in front before unlock; bringing Aerial up early")
+                // The firmware's SCREEN_ON policy starts the stock launcher during boot itself, and
+                // its splash paints until this bring-up wins. The wallpaper cover hides it all:
+                // boot logo, then the wallpaper, then Aerial — the stock launcher never shows.
+                showWakeCover()
+                handler.removeCallbacks(hideWakeCoverRunnable)
+                // The boot phase holds the cover through both launches (the early one here and
+                // the post-unlock take-over); the unlock hides it via the Aerial-front hook.
+                handler.postDelayed(hideWakeCoverRunnable, BOOT_WINDOW_MS)
+                broughtBackAt = SystemClock.uptimeMillis()
+                runCatching { startActivity(MainActivity.bringBackIntent(this)) }
+                    .onFailure { Log.w(TAG, "could not bring Aerial up before unlock", it) }
+            }
+            return
+        }
         val allowed = SystemClock.uptimeMillis() < allowStockUntil
         if (pkg in stockHomes) {
             // Any of its screens, uncovered once the installer of an update from Control Center closed.
@@ -911,9 +1102,12 @@ class HomeGuardService : AccessibilityService() {
                 return
             }
             updateKeyFilter()
-            // Only the stock launcher's home activity itself, not its dialogs or other screens.
-            // Not gated on isDefaultHome(): see takeOverIfStockHomeInFront.
-            if (cls !in stockHomes.getValue(pkg) || allowed) return
+            // Any screen of the stock launcher, not only its home activity: the M key on the China
+            // Mobile MagicBox M31H (YunOS) opens the launcher's tab pages ("M键生活广场") over
+            // Aerial, and its firmware pushes tab pages at boot too. A deliberate visit from the
+            // stock-desktop tile sets the allowance checked above, so this only hits the unsolicited
+            // and accidental ones.
+            if (allowed) return
             // Switching inputs passes through the stock launcher on Skyworth: the TV service starts
             // its SkyLauncher, the launcher shows for a moment, then the input. Taking Home at once
             // aborted the switch (Skyworth 8H26_M9, Android 5.1, issues #108, #155). Look again
@@ -932,6 +1126,17 @@ class HomeGuardService : AccessibilityService() {
                 handler.removeCallbacks(stockHomeRecheck)
                 handler.postDelayed(stockHomeRecheck, 1_000 - since + 300)
                 return
+            }
+            // A stock page that keeps re-fronting itself against every grab (the M-key portal on
+            // MagicBox M31H re-fronts ~1 s apart) is a hijack, not a visit: on the third fast
+            // round, kill its background process — dead, it cannot front again. The process was
+            // just backgrounded by this very grab, so killBackgroundProcesses reaches it.
+            warStrikes = if (SystemClock.uptimeMillis() - lastStockGrabAt < 3_000) warStrikes + 1 else 1
+            lastStockGrabAt = SystemClock.uptimeMillis()
+            if (warStrikes >= 3) {
+                warStrikes = 0
+                Log.i(TAG, "stock launcher re-fronted 3x fast; killing its background process")
+                starveStockLaunchers("hijack war")
             }
             Log.i(TAG, "stock home $pkg came to the front; bringing Aerial back")
             // Shortly after the screen lit, this is the wake itself (issue #111).
@@ -1097,6 +1302,15 @@ class HomeGuardService : AccessibilityService() {
 
     private fun goHome(woke: Boolean = false) {
         if (!GuardSetup.isUserUnlocked(this)) return
+        // Aerial's Home is already the resumed activity: what fronted it was only a starting
+        // window (the firmware starts the stock launcher on SCREEN_ON at boot, MagicBox M31H),
+        // which does not pause the activity under it. Starting Home again would clear and
+        // rebuild a perfectly good visible Home (clearTaskOnLaunch) — the jolt at boot.
+        if (aerialResumed) {
+            Log.i(TAG, "Aerial already resumed; leaving Home alone")
+            broughtBackAt = SystemClock.uptimeMillis()
+            return
+        }
         // Starting an activity can light the screen: on OPPO K9 the TV came back on by itself a few
         // seconds into standby (issue #22). The screen-on check takes over at wake instead.
         if (getSystemService<PowerManager>()?.isInteractive == false) {
@@ -1111,15 +1325,34 @@ class HomeGuardService : AccessibilityService() {
             return
         }
         broughtBackAt = SystemClock.uptimeMillis()
+        // Cover the fight: a stock page that re-fronts itself (the M-key portal on MagicBox
+        // M31H) would paint between grabs. The viewer sees black until Aerial is stable.
+        showWakeCover()
+        handler.removeCallbacks(hideWakeCoverRunnable)
+        handler.postDelayed(hideWakeCoverRunnable, WAKE_COVER_MAX_MS)
         runCatching {
             startActivity(MainActivity.bringBackIntent(this).putExtra(MainActivity.EXTRA_WOKE, woke))
         }.onFailure { Log.w(TAG, "could not bring Aerial Home to the front", it) }
+        // The startActivity alone can lose to a firmware that keeps re-fronting its page while it
+        // loads (YunOS MagicBox M31H: the M key's portal page held the front for ~12 s against a
+        // start every 1.3 s). The Home key goes through the system's default-Home resolution,
+        // which the firmware does not intercept.
+        runCatching { performGlobalAction(GLOBAL_ACTION_HOME) }
+            .onFailure { Log.w(TAG, "could not press Home globally", it) }
     }
 
     companion object {
         private const val TAG = "AerialGuard"
         private const val BOOT_WINDOW_MS = 3 * 60 * 1000L
         private const val SETTLE_MS = 1500L
+        private const val WAKE_COVER_MAX_MS = 4_000L
+
+        /** YunOS MagicBox boxes: the policy layer hijacks the remote's M key for a stock tab. */
+        private val mKeyDevice = Build.MODEL.startsWith("MagicBox")
+
+        /** Consecutive fast stock-front grabs: a re-fronting page at war with the guard. */
+        private var warStrikes = 0
+        private var lastStockGrabAt = Long.MIN_VALUE / 2
         private const val WAKE_WINDOW_MS = 15_000L
         private val BOOT_RECHECKS_MS = listOf(30_000L, 45_000L)
         private const val DEAF_AFTER_MS = 20_000L
@@ -1129,7 +1362,7 @@ class HomeGuardService : AccessibilityService() {
         private const val DEAF_LOOK_MS = 150L
         private const val XGIMI_FRAMEWORK = "com.xgimi.xgimiframeworkui"
         private const val FOREGROUND_POLL_MS = 1_000L
-        private const val FOREGROUND_LOOKBACK_MS = 10_000L
+        private const val FOREGROUND_LOOKBACK_MS = 10 * 60_000L
         /** How far back to look for the front when no window has been seen; see frontByUsage. */
         private const val UNKNOWN_FRONT_LOOKBACK_MS = 6 * 60 * 60 * 1000L
         private const val DOUBLE_HOME_MS = 400L
@@ -1155,7 +1388,7 @@ class HomeGuardService : AccessibilityService() {
         private val VOLUME_KEYS = setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_MUTE)
 
         @Volatile
-        private var deafRetried = false
+        private var deafRetries = 0
 
         /** Accessibility switched off and on for a deaf guard once already in this process; see frontAfterHome. */
         @Volatile
