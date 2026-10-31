@@ -14,6 +14,15 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
         tools:ignore="CoarseFineLocation" />
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <!-- Killing the stock launcher's background process at standby, so it cannot push itself back
+         to the front at wake (Tmall MagicBox M31H: its warm process fronts its tab every wake).
+         HomeGuardService.starveStockLaunchers runs only on that box. -->
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Android 12+: the Tmall MagicBox M31H standby-revival alarm (StandbyRevivalReceiver).
+         Not granted by default from Android 14; that receiver checks canScheduleExactAlarms()
+         and falls back to an inexact alarm instead of crashing. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- Installing a new version from Control Center (update/Updates.kt). On TVs without the
          "install unknown apps" page (TCL) tools/install.sh allows it over ADB. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -90,6 +99,22 @@
         <!-- The HOME intent filter is added by the "standard" flavor (src/standard).
              Not in recent apps: where the firmware keeps Home for itself, Aerial's task is a standard
              one and showed as a card first in the list that switched to nothing (MiTV-MFTR0, #324). -->
+        <!-- Intercepts the firmware's remote-key deep links before the stock launcher: the M key
+             fires yunostv_yingshi://goto_tab?tabId=1039 (the "M键生活广场" ad portal, Tmall
+             MagicBox M31H / 天猫魔盒). Priority 999 wins the implicit resolution. Only on that
+             box is tabId 1039 swallowed; every other device hands the link on (DeepLinkInterceptor). -->
+        <activity
+            android:name=".DeepLinkInterceptor"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true"
+            android:noHistory="true"
+            android:excludeFromRecents="true">
+            <intent-filter android:priority="999">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:scheme="yunostv_yingshi" android:host="goto_tab"/>
+            </intent-filter>
+        </activity>
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -134,6 +159,9 @@
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+        <receiver
+            android:name=".guard.StandbyRevivalReceiver"
+            android:exported="false" />
 
         <service
             android:name=".dream.AerialDream"
