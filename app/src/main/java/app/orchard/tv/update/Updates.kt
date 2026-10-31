@@ -92,6 +92,16 @@ object Updates {
         }
     }
 
+    /** Decouples this install from upstream releases: Control Center stops checking and any
+     *  known newer version is forgotten. For patched builds official updates cannot replace
+     *  anyway (MagicBox M31H): they would only nag, download, and fail on the signature. */
+    fun setCheckEnabled(context: Context, enabled: Boolean) {
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit { putBoolean("check_enabled", enabled); if (!enabled) remove("latest") }
+        if (!enabled) available = null
+        Log.i(TAG, "update checks switched ${if (enabled) "on" else "off"}")
+    }
+
     /**
      * [force]: now, however recently it last looked (ConfigReceiver's check_update). Opening Control
      * Center asks with a shorter [maxAgeMs]: that is where the viewer looks for a new version, and a
@@ -102,6 +112,10 @@ object Updates {
         maxAgeMs: Long = UpdateCheck.MAX_AGE_MS,
         networkCameUp: Boolean = false,
     ) {
+        if (!prefs.getBoolean("check_enabled", true)) {
+            if (force) Log.i(TAG, "update checks are switched off; not looking")
+            return
+        }
         checker?.check(force, maxAgeMs, networkCameUp, when {
             force -> "forced"
             networkCameUp -> "network"

@@ -128,6 +128,12 @@ class ConfigReceiver : BroadcastReceiver() {
             } else null
         }
         if (intent.getBooleanExtra("update_test_self", false)) Updates.testApk = java.io.File(context.applicationInfo.sourceDir)
+        // ... --ez update_check true|false (Control Center update checks against upstream
+        //                                 releases; false decouples the TV from them entirely)
+        if (intent.hasExtra("update_check")) {
+            Updates.init(context)
+            Updates.setCheckEnabled(context, intent.getBooleanExtra("update_check", true))
+        }
         if (intent.getBooleanExtra("check_update", false)) {
             Updates.init(context)
             Updates.checkIfStale(force = true)
