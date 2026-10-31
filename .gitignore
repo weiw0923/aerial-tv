@@ -17,3 +17,4 @@ site/icons/
 
 # Wrangler state and the account cache (account id, e-mail).
 .wrangler/
+backups/
