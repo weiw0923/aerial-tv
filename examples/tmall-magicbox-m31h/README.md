@@ -33,7 +33,7 @@
 
 ```bash
 git clone https://github.com/weiw0923/aerial-tv && cd aerial-tv/examples/tmall-magicbox-m31h
-TV=<盒子IP>:5555 ./snapshot.sh          # 1. 快照（落在你本地 backups/，勿提交）
+TV=<盒子IP>:5555 ./snapshot.sh          # 1. 快照（默认落仓库 backups/，可用 BACKUP_DIR 重定向；勿提交）
 TV=<盒子IP>:5555 ./apply.sh             # 2. 除杀手 + 掐优酷开机广播
 # 3. 安装 Aerial（见仓库 README 的安装命令；本分支的构建含全部守护补丁）
 TV=<盒子IP>:5555 ./restore.sh           # 需要回出厂状态时

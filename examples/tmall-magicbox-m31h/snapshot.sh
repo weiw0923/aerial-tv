@@ -6,8 +6,7 @@
 set -u
 TV=${TV:?set TV=host:port}
 ADB_SH=${ADB_SH:-adb}
-REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-OUT="$REPO/backups/$(date +%F)-$(echo "$TV" | tr ':.' '--')"
+OUT="${BACKUP_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/backups}/$(date +%F)-$(echo "$TV" | tr ':.' '--')"
 mkdir -p "$OUT"
 run() { echo "\$ $*" >&2; $ADB_SH -s "$TV" "$@" 2>&1; }
 $ADB_SH connect "$TV" >/dev/null 2>&1 || true
@@ -26,5 +25,5 @@ run shell settings list global       > "$OUT/settings-global.txt"
 run shell cmd package query-activities -a android.intent.action.MAIN -c android.intent.category.HOME > "$OUT/homes.txt"
 run shell cmd appops get com.youku.taitan.tv > "$OUT/appops-youku.txt"
 run shell cmd appops get app.orchard.tv      > "$OUT/appops-aerial.txt"
-( cd "$OUT" && shasum -a 256 * > SHA256SUMS )
+( cd "$OUT" && { command -v shasum >/dev/null && shasum -a 256 * || sha256sum *; } > SHA256SUMS )
 echo "snapshot written to $OUT ($(ls "$OUT" | wc -l | tr -d ' ') files)"
