@@ -134,6 +134,12 @@ class ConfigReceiver : BroadcastReceiver() {
             Updates.init(context)
             Updates.setCheckEnabled(context, intent.getBooleanExtra("update_check", true))
         }
+        // ... --es update_repo <owner/repo> ("default" = upstream; the latest release's assets
+        //                                 version.txt and aerial-<flavor>.apk are the update)
+        intent.getStringExtra("update_repo")?.let {
+            Updates.init(context)
+            Updates.setUpdateBase(context, it)
+        }
         if (intent.getBooleanExtra("check_update", false)) {
             Updates.init(context)
             Updates.checkIfStale(force = true)

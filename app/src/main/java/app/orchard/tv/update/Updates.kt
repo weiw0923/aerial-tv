@@ -79,7 +79,7 @@ object Updates {
         checker = UpdateCheck(
             scope = scope,
             lastSuccess = { prefs.getLong("checked_at", 0) },
-            read = { withContext(Dispatchers.IO) { read(VERSION_URL) } },
+            read = { withContext(Dispatchers.IO) { read(versionUrl()) } },
             save = { latest, checkedAt ->
                 prefs.edit { putString("latest", latest); putLong("checked_at", checkedAt) }
                 available = latest.takeIf { newer(it, current) }
@@ -100,6 +100,26 @@ object Updates {
             .edit { putBoolean("check_enabled", enabled); if (!enabled) remove("latest") }
         if (!enabled) available = null
         Log.i(TAG, "update checks switched ${if (enabled) "on" else "off"}")
+    }
+
+    /** The configured update source as "owner/repo", or null for the upstream default. */
+    private fun updateBase(): String? =
+        prefs.getString("update_base", null)?.takeUnless { it.isBlank() }
+
+    private fun versionUrl(): String =
+        updateBase()?.let { "https://github.com/$it/releases/latest/download/version.txt" } ?: VERSION_URL
+
+    /** Points update checks and downloads at the given "owner/repo"'s latest release (assets
+     *  version.txt and aerial-<flavor>.apk), or back to upstream with "default". For installs
+     *  whose updates come from a fork carrying the patched build (MagicBox M31H). */
+    fun setUpdateBase(context: Context, base: String?) {
+        val v = base?.trim()?.takeUnless { it.isEmpty() || it == "default" }
+        val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (v == null) p.edit { remove("update_base") } else p.edit { putString("update_base", v) }
+        started = false
+        checker = null
+        init(context)
+        Log.i(TAG, "update source: ${v ?: "upstream default"}")
     }
 
     /**
@@ -386,7 +406,9 @@ object Updates {
             return verify(context, file)
         }
         val name = "aerial-${BuildConfig.FLAVOR}.apk"
-        val sources = listOf(
+        val sources = updateBase()?.let {
+            listOf("https://github.com/$it/releases/latest/download/$name")
+        } ?: listOf(
             "https://aerial.qust.me/download/$name",
             "https://github.com/pengchujin/aerial-tv/releases/latest/download/$name",
         )
