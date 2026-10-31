@@ -153,11 +153,20 @@ class HomeActivity : Activity(), HomeView.Host {
         }
     }
 
+    /** Keys whose press came here and which have not been lifted yet. */
+    private val keysDown = HashSet<Int>()
+
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
         resetIdle()
+        // A lift whose press never reached us still wakes the screensaver: some remotes' keys are
+        // pressed for a vendor hotkey service and only lifted for the app (Coocaa C10, issue #915).
+        val loneLift = e.action == KeyEvent.ACTION_UP && !e.isCanceled && !keysDown.contains(e.keyCode)
+        if (e.action == KeyEvent.ACTION_DOWN) keysDown.add(e.keyCode) else keysDown.remove(e.keyCode)
         if (saver != null) {
             if (e.action == KeyEvent.ACTION_DOWN) {
                 swallow = e.keyCode
+                hideSaver()
+            } else if (loneLift) {
                 hideSaver()
             }
             return true
@@ -509,6 +518,9 @@ class HomeActivity : Activity(), HomeView.Host {
         if (!keepBelow) closeAll()
         panels += p
         root.addView(p)
+        home.coveredBelow = 0
+        // Once Personalize has slid in (320 ms), Home draws only above it.
+        if (p is Personalize) handler.postDelayed({ if (panels.lastOrNull() === p) home.coveredBelow = p.covers }, 400)
         // Panels at the top right take the status pill's place, as in the full app.
         home.topRight.alpha = if (panels.any { it is ControlCenter || it is HiddenApps }) 0f else 1f
         redrawAllInSoftware()
@@ -516,6 +528,7 @@ class HomeActivity : Activity(), HomeView.Host {
 
     private fun closePanel() {
         panels.removeLastOrNull()?.let { root.removeView(it) }
+        home.coveredBelow = 0
         home.topRight.alpha = if (panels.any { it is ControlCenter || it is HiddenApps }) 0f else 1f
         redrawAllInSoftware()
     }
