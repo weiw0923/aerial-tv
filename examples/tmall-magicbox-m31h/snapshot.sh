@@ -1,12 +1,15 @@
 #!/bin/bash
-# Snapshot a TV's state before surgery. Backups land in ./backups/ on the machine
-# running this script (gitignored, never committed — the data is device-private).
+# Snapshot a TV's state before surgery. Backups land in BACKUP_ROOT from backup-dir.sh
+# (the repo backups/ directory unless BACKUP_DIR is set). apply.sh reads the same
+# directory. Gitignored, never committed — the data is device-private.
 #   TV=192.168.0.109:5555 ./snapshot.sh            # direct adb
 #   ADB_SH="ssh root@relay adb" TV=1.2.3.4:5555 ./snapshot.sh   # via a relay host
 set -u
 TV=${TV:?set TV=host:port}
 ADB_SH=${ADB_SH:-adb}
-OUT="${BACKUP_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/backups}/$(date +%F)-$(echo "$TV" | tr ':.' '--')"
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "$0")" && pwd)/backup-dir.sh"
+OUT="$BACKUP_ROOT/$(date +%F)-$(echo "$TV" | tr ':.' '--')"
 mkdir -p "$OUT"
 run() { echo "\$ $*" >&2; $ADB_SH -s "$TV" "$@" 2>&1; }
 $ADB_SH connect "$TV" >/dev/null 2>&1 || true

@@ -6,7 +6,10 @@ set -u
 TV=${TV:?set TV=host:port}
 ADB_SH=${ADB_SH:-adb}
 DIR="$(cd "$(dirname "$0")" && pwd)"
-ls "$DIR"/../../backups/*/device.txt >/dev/null 2>&1 || { echo "no snapshot found in ../../backups — run snapshot.sh first"; exit 1; }
+# Same directory snapshot.sh writes into (backup-dir.sh). BACKUP_DIR redirects both.
+# shellcheck disable=SC1091
+source "$DIR/backup-dir.sh"
+ls "$BACKUP_ROOT"/*/device.txt >/dev/null 2>&1 || { echo "no snapshot found in $BACKUP_ROOT — run snapshot.sh first"; exit 1; }
 $ADB_SH connect "$TV" >/dev/null 2>&1 || true
 grep -vE '^\s*(#|$)' "$DIR/debloat.txt" | while read -r action pkg extra; do
   case "$action" in

@@ -1,7 +1,9 @@
-# Tmall MagicBox M31H（天猫魔盒，YunOS Android 10）
+# 天猫魔盒 M31H（Tmall MagicBox，阿里云 YunOS，Android 10）
 
-一台 YunOS 运营商系盒子的完整驯化记录：固件行为、每个坑的成因、可复现的处置步骤。
+阿里巴巴天猫魔盒 M31H（全志 H313）的完整驯化记录：固件行为、每个坑的成因、可复现的处置步骤。
+这是天猫魔盒，不是中国移动魔百和。
 工具通用于本目录的 `snapshot.sh` / `apply.sh` / `restore.sh`（任何 adb 可达的电视都能跑）。
+`snapshot.sh` 和 `apply.sh` 的备份目录都来自 `backup-dir.sh`。
 
 ## 固件行为（全部逆向实证）
 
@@ -32,10 +34,11 @@
 ## 复现步骤
 
 ```bash
-git clone https://github.com/weiw0923/aerial-tv && cd aerial-tv/examples/tmall-magicbox-m31h
-TV=<盒子IP>:5555 ./snapshot.sh          # 1. 快照（默认落仓库 backups/，可用 BACKUP_DIR 重定向；勿提交）
+# 示例在 magicbox-m31h 分支上，默认克隆 main 拿不到这个目录。
+git clone -b magicbox-m31h https://github.com/weiw0923/aerial-tv && cd aerial-tv/examples/tmall-magicbox-m31h
+TV=<盒子IP>:5555 ./snapshot.sh          # 1. 快照（与 apply.sh 共用 backup-dir.sh；默认仓库 backups/，可用 BACKUP_DIR 重定向；勿提交）
 TV=<盒子IP>:5555 ./apply.sh             # 2. 除杀手 + 掐优酷开机广播
-# 3. 安装 Aerial（见仓库 README 的安装命令；本分支的构建含全部守护补丁）
+# 3. 安装 Aerial（见仓库 README 的安装命令；本分支的构建含天猫魔盒 M31H 的守护补丁）
 TV=<盒子IP>:5555 ./restore.sh           # 需要回出厂状态时
 ```
 
