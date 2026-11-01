@@ -24,6 +24,7 @@ import androidx.core.content.edit
 import app.orchard.tv.BuildConfig
 import app.orchard.tv.guard.GuardSetup
 import app.orchard.tv.system.DiagLog
+import app.orchard.tv.system.TmallM31H
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,6 +49,9 @@ object Updates {
     private const val TAG = "AerialUpdates"
     private const val PREFS = "updates"
     private const val VERSION_URL = "https://aerial.qust.me/download/version.txt"
+
+    /** Fork that carries the M31H build. Used when no update_base pref is set, on that box only. */
+    private const val M31H_UPDATE_REPO = "weiw0923/aerial-tv"
 
     /**
      * A source that delivers less than [STALL_BYTES] in [STALL_MS] is given up for the next one
@@ -105,17 +109,21 @@ object Updates {
         Log.i(TAG, "update checks switched ${if (enabled) "on" else "off"}")
     }
 
-    /** The configured update source as "owner/repo", or null for the upstream default. */
-    private fun updateBase(): String? =
-        prefs.getString("update_base", null)?.takeUnless { it.isBlank() }
+    /** The configured update source as "owner/repo", the M31H fork when that box has no pref, or null. */
+    private fun updateBase(): String? {
+        val saved = prefs.getString("update_base", null)?.takeUnless { it.isBlank() }
+        if (saved != null) return saved
+        return if (TmallM31H.isTmallM31H()) M31H_UPDATE_REPO else null
+    }
 
     private fun versionUrl(): String =
         updateBase()?.let { "https://github.com/$it/releases/latest/download/version.txt" } ?: VERSION_URL
 
     /** Points update checks and downloads at the given "owner/repo"'s latest release (assets
-     *  version.txt and aerial-<flavor>.apk), or back to upstream with "default". For installs
-     *  whose updates come from a fork carrying the patched build (Tmall MagicBox M31H).
-     *  Downloaded APKs still install through the session and dex-metadata path. */
+     *  version.txt and aerial-<flavor>.apk). "default" or blank clears the pref: the Tmall
+     *  MagicBox M31H then uses weiw0923/aerial-tv, every other device uses upstream.
+     *  Pass pengchujin/aerial-tv to force upstream on the M31H. Downloaded APKs still install
+     *  through the session and dex-metadata path. */
     fun setUpdateBase(context: Context, base: String?) {
         val v = base?.trim()?.takeUnless { it.isEmpty() || it == "default" }
         val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -123,7 +131,7 @@ object Updates {
         started = false
         checker = null
         init(context)
-        Log.i(TAG, "update source: ${v ?: "upstream default"}")
+        Log.i(TAG, "update source: ${updateBase() ?: "upstream default"}")
     }
 
     /**

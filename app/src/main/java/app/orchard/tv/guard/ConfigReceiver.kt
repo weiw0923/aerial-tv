@@ -38,7 +38,8 @@ import kotlinx.coroutines.launch
  *   ... --ez update_check false     (stop Control Center update checks; a patched build such as the
  *                                   Tmall MagicBox M31H cannot take an upstream APK)
  *   ... --es update_repo owner/repo (latest release of that fork: version.txt and aerial-<flavor>.apk;
- *                                   "default" is upstream again)
+ *                                   "default" clears it. On the Tmall MagicBox M31H the built-in
+ *                                   source is weiw0923/aerial-tv; pengchujin/aerial-tv forces upstream)
  * The manifest requires the sender to hold WRITE_SECURE_SETTINGS, which the ADB shell has and
  * ordinary apps cannot get, so no other app on the TV can flip these.
  */
@@ -138,8 +139,8 @@ class ConfigReceiver : BroadcastReceiver() {
             Updates.init(context)
             Updates.setCheckEnabled(context, intent.getBooleanExtra("update_check", true))
         }
-        // ... --es update_repo <owner/repo> ("default" = upstream; the latest release's assets
-        //                                 version.txt and aerial-<flavor>.apk are the update)
+        // ... --es update_repo <owner/repo> ("default" clears the pref: M31H then uses
+        //                                 weiw0923/aerial-tv; pengchujin/aerial-tv forces upstream)
         intent.getStringExtra("update_repo")?.let {
             Updates.init(context)
             Updates.setUpdateBase(context, it)

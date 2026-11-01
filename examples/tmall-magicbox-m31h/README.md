@@ -1,7 +1,36 @@
 # 天猫魔盒 M31H（Tmall MagicBox，阿里云 YunOS，Android 10）
 
 阿里巴巴天猫魔盒 M31H（全志 H313）的完整驯化记录：固件行为、每个坑的成因、可复现的处置步骤。
-这是天猫魔盒，不是中国移动魔百和。
+这是天猫魔盒，不是中国移动魔百和。Android 10。专用逻辑只在 `getprop` 读出下面这组字符串时打开。
+
+## 怎么确认是这台（getprop）
+
+连上盒子后：
+
+```bash
+adb shell getprop ro.product.model
+adb shell getprop ro.product.device
+adb shell getprop ro.product.name
+adb shell getprop ro.product.brand
+adb shell getprop ro.product.manufacturer
+adb shell getprop ro.build.version.release
+```
+
+这台实测是：
+
+| 属性 | 值 |
+|---|---|
+| `ro.product.model` | `MagicBox_M_31_H` |
+| `ro.product.device` | `MagicBox_M_31_H` |
+| `ro.product.name` | `MagicBox_M_31_H` |
+| `ro.product.brand` | `MagicBox_M_31_H` |
+| `ro.product.manufacturer` | `Tmall` |
+| `ro.build.version.release` | `10` |
+
+不是 `MagicBox_M31H`（31 两边没有下划线）。`TmallM31H.isTmallM31H()` 要求 model 或 device 正好是 `MagicBox_M_31_H`，并且厂商是 `Tmall` 或品牌是 `MagicBox_M_31_H`。
+
+这台盒子没设过 `--es update_repo` 时，控制中心更新默认看 `weiw0923/aerial-tv` 的最新 Release（需要那里有 `version.txt` 和 `aerial-<flavor>.apk`）。`--es update_repo default` 清掉覆盖，回到这个默认；`--es update_repo pengchujin/aerial-tv` 才改回上游。
+
 工具通用于本目录的 `snapshot.sh` / `apply.sh` / `restore.sh`（任何 adb 可达的电视都能跑）。
 `snapshot.sh` 和 `apply.sh` 的备份目录都来自 `backup-dir.sh`。
 
@@ -29,13 +58,15 @@
 - **优酷**：留在系统里当唤醒接球手，appops 掐掉其开机广播，永远隐形
 - **tvmgr / minimonitor**：用户级卸载（数据保留，`install-existing` 可逆）
 - **Aerial**：默认桌面 + 守护栈（黑幕遮蔽 / 预解锁抢位 / 失聪自愈 / 复活闹钟 / M 键深链拦截 / already-resumed 防抖）
-- **更新**：`--es update_repo` 指向自己的 fork，与官方发布解耦
+- **更新**：天猫魔盒 M31H 默认 `--es update_repo` 为 `weiw0923/aerial-tv`，仍可用该广播改掉
 
 ## 复现步骤
 
 ```bash
-# 合入 main 之后默认克隆即可（这份示例用来替换 magicbox-m31h 分支）。
-git clone https://github.com/weiw0923/aerial-tv && cd aerial-tv/examples/tmall-magicbox-m31h
+# 合进 main 之前，示例在本分支，不在默认的 main 上：
+git clone -b cursor/m31h-on-upstream-661a https://github.com/weiw0923/aerial-tv && cd aerial-tv/examples/tmall-magicbox-m31h
+# 合进 main 之后改为：
+# git clone https://github.com/weiw0923/aerial-tv && cd aerial-tv/examples/tmall-magicbox-m31h
 TV=<盒子IP>:5555 ./snapshot.sh          # 1. 快照（与 apply.sh 共用 backup-dir.sh；默认仓库 backups/，可用 BACKUP_DIR 重定向；勿提交）
 TV=<盒子IP>:5555 ./apply.sh             # 2. 除杀手 + 掐优酷开机广播
 # 3. 安装 Aerial（见仓库 README 的安装命令；本分支的构建含天猫魔盒 M31H 的守护补丁）

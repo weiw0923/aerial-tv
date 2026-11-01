@@ -175,7 +175,9 @@ class HomeGuardService : AccessibilityService() {
             // PatchWall's boot screen comes up seconds after what the TV starts on was opened (DTV,
             // 5 s later, MiTV4A, Android 6.0.1, issue #963's log): back to that, not Aerial's Home.
             // Not keyed to BootActivity: its home activity can come first (see bootTargetCovered).
-            if (bootTargetCovered()) {
+            // On the M31H the stock page in front is the firmware's SCREEN_ON hijack, not that
+            // cover: bring Aerial back, with the wake cover.
+            if (!TmallM31H.isTmallM31H() && bootTargetCovered()) {
                 Log.i(TAG, "stock launcher's screen over what the TV starts on; opening that again")
                 // Which screen usage stats gave, for the next report from a TV without logcat.
                 DiagLog.i("guard: $pkg/$cls over what the TV starts on; opening that again")
@@ -184,7 +186,10 @@ class HomeGuardService : AccessibilityService() {
             }
             Log.i(TAG, "stock launcher $pkg in front by usage stats; bringing Aerial back")
             val woke = SystemClock.elapsedRealtime() - screenOnAt < WAKE_WINDOW_MS
-            if (!woke && homeKeyReachesAerial && isDefaultHome() && pressHomeForStock()) {
+            // #933 sends a Home press and waits 1.5 s. On the Tmall MagicBox M31H that press
+            // starts the stock launcher, so the stock UI flashes until the fallback start.
+            // Start Aerial directly there.
+            if (!TmallM31H.isTmallM31H() && !woke && homeKeyReachesAerial && isDefaultHome() && pressHomeForStock()) {
                 broughtBackAt = SystemClock.uptimeMillis()
                 handler.removeCallbacks(homeKeyCheck)
                 handler.postDelayed(homeKeyCheck, HOME_KEY_CHECK_MS)
@@ -304,13 +309,18 @@ class HomeGuardService : AccessibilityService() {
     /**
      * On the same Mi TV 4 the guard bound at boot is sometimes deaf: bound, yet no window change
      * ever arrives, and only switching accessibility off and on again brings them (issue #318:
-     * rewriting the list of services was not enough). Up to Android 6, once per process. Also
-     * looks for the stock launchers again if none were found at the connection.
+     * rewriting the list of services was not enough). Up to five times per process, and not
+     * when usage stats can already see the front. Also looks for the stock launchers again
+     * if none were found at the connection.
      */
     private val deafCheck = Runnable {
         if (stockHomes.isEmpty()) refreshStockHomes()
-        if (sawEvent || deafRetried) return@Runnable
-        deafRetried = true
+        // With the usage-stats poll watching the front, a quiet binding needs no accessibility
+        // restart: quiet is not deaf (a page that sat down before the bind raises no event).
+        // Up to five tries when usage stats are not allowed (the M31H guard goes deaf after
+        // standby; one restart was not enough).
+        if (sawEvent || deafRetries >= 5 || usageStatsAllowed(this)) return@Runnable
+        deafRetries++
         Log.i(TAG, "no window change since bound; switching accessibility off and on")
         GuardSetup.restartAccessibility(this)
     }
@@ -893,7 +903,9 @@ class HomeGuardService : AccessibilityService() {
         // not Aerial's Home. Reached at the boot rechecks and by a process started again in the boot
         // window, where usage stats still have the stock launcher's move to the front from before
         // the target opened (MiTV4-ANSM0, Android 6.0.1, issue #963's log: 38 s after the target).
-        if (bootTargetCovered()) {
+        // Same as the usage-stats path: #963 stays off on the M31H so the wake cover and the
+        // already-resumed skip still hide the stock launcher.
+        if (!TmallM31H.isTmallM31H() && bootTargetCovered()) {
             Log.i(TAG, "$reason with the stock launcher over what the TV starts on; opening that again")
             val front = last?.let { "${it.first}/${it.second}" } ?: "unknown"
             DiagLog.i("guard: $reason, front $front; opening what the TV starts on again")
@@ -1564,11 +1576,11 @@ class HomeGuardService : AccessibilityService() {
 
     private fun goHome(woke: Boolean = false, reopenBoot: Boolean = false) {
         if (!GuardSetup.isUserUnlocked(this)) return
-        // Tmall MagicBox M31H only, and not when reopening what the TV starts on (upstream #963).
-        // There the firmware's SCREEN_ON start of the stock launcher is a starting window that
-        // does not pause the Home under it; starting Home again would clear and rebuild a visible
-        // Home (clearTaskOnLaunch) — the jolt at boot. Other TVs still relaunch.
-        if (TmallM31H.isTmallM31H() && aerialResumed && !reopenBoot) {
+        // Tmall MagicBox M31H: the firmware's SCREEN_ON start of the stock launcher is a starting
+        // window that does not pause the Home under it. Starting Home again would clear and rebuild
+        // a visible Home (clearTaskOnLaunch) — the boot jolt. This holds even if a caller asked to
+        // reopen a boot target. Other TVs still relaunch, including for #963.
+        if (TmallM31H.isTmallM31H() && aerialResumed) {
             Log.i(TAG, "Aerial already resumed; leaving Home alone")
             broughtBackAt = SystemClock.uptimeMillis()
             return
@@ -1587,16 +1599,17 @@ class HomeGuardService : AccessibilityService() {
             return
         }
         broughtBackAt = SystemClock.uptimeMillis()
-        // Cover the fight on the M31H: a stock page that re-fronts itself would paint between grabs.
-        // Not when reopening what the TV starts on: the cover would hide that target (#963).
-        if (TmallM31H.isTmallM31H() && !reopenBoot) {
+        // Cover the fight on the M31H even if a caller passed reopenBoot. Other TVs still skip
+        // the cover when they are reopening what the TV starts on (#963).
+        val reopen = reopenBoot && !TmallM31H.isTmallM31H()
+        if (TmallM31H.isTmallM31H()) {
             showWakeCover()
             handler.removeCallbacks(hideWakeCoverRunnable)
             handler.postDelayed(hideWakeCoverRunnable, WAKE_COVER_MAX_MS)
         }
         runCatching {
             val intent = MainActivity.bringBackIntent(this).putExtra(MainActivity.EXTRA_WOKE, woke)
-                .putExtra(MainActivity.EXTRA_REOPEN_BOOT, reopenBoot)
+                .putExtra(MainActivity.EXTRA_REOPEN_BOOT, reopen)
             if (!startPastHomeHold(intent)) startActivity(intent)
         }.onFailure { Log.w(TAG, "could not bring Aerial Home to the front", it) }
     }
@@ -1644,7 +1657,9 @@ class HomeGuardService : AccessibilityService() {
         private const val DEAF_LOOK_MS = 150L
         private const val XGIMI_FRAMEWORK = "com.xgimi.xgimiframeworkui"
         private const val FOREGROUND_POLL_MS = 1_000L
-        private const val FOREGROUND_LOOKBACK_MS = 10_000L
+        /** Ten minutes, not upstream's 10 s: on the M31H a stock page can sit down before this
+         *  process binds, and a 10 s window no longer contains that move to the front. */
+        private const val FOREGROUND_LOOKBACK_MS = 10 * 60_000L
         /** How far back to look for the front when no window has been seen; see frontByUsage. */
         private const val UNKNOWN_FRONT_LOOKBACK_MS = 6 * 60 * 60 * 1000L
         private const val DOUBLE_HOME_MS = 400L
@@ -1674,7 +1689,7 @@ class HomeGuardService : AccessibilityService() {
         private val VOLUME_KEYS = setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_MUTE)
 
         @Volatile
-        private var deafRetried = false
+        private var deafRetries = 0
 
         /** Accessibility switched off and on for a deaf guard once already in this process; see frontAfterHome. */
         @Volatile
