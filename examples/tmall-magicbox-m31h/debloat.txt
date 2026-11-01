@@ -1,4 +1,5 @@
 # Tmall MagicBox M31H (YunOS Android 10) — verified neutralization list.
+# getprop on this unit: model/device/name/brand = MagicBox_M_31_H, manufacturer = Tmall.
 # Format: <action> <package> [extra]
 # Actions: uninstall (user 0, data kept) | appops-deny <op> | keep (do nothing, documented)
 #

@@ -1,7 +1,34 @@
 # 天猫魔盒 M31H（Tmall MagicBox，阿里云 YunOS，Android 10）
 
 阿里巴巴天猫魔盒 M31H（全志 H313）的完整驯化记录：固件行为、每个坑的成因、可复现的处置步骤。
-这是天猫魔盒，不是中国移动魔百和。
+这是天猫魔盒，不是中国移动魔百和。Android 10。专用逻辑只在 `getprop` 读出下面这组字符串时打开。
+
+## 怎么确认是这台（getprop）
+
+连上盒子后：
+
+```bash
+adb shell getprop ro.product.model
+adb shell getprop ro.product.device
+adb shell getprop ro.product.name
+adb shell getprop ro.product.brand
+adb shell getprop ro.product.manufacturer
+adb shell getprop ro.build.version.release
+```
+
+这台实测是：
+
+| 属性 | 值 |
+|---|---|
+| `ro.product.model` | `MagicBox_M_31_H` |
+| `ro.product.device` | `MagicBox_M_31_H` |
+| `ro.product.name` | `MagicBox_M_31_H` |
+| `ro.product.brand` | `MagicBox_M_31_H` |
+| `ro.product.manufacturer` | `Tmall` |
+| `ro.build.version.release` | `10` |
+
+不是 `MagicBox_M31H`（31 两边没有下划线）。`TmallM31H.isTmallM31H()` 要求 model 或 device 正好是 `MagicBox_M_31_H`，并且厂商是 `Tmall` 或品牌是 `MagicBox_M_31_H`。厂商 `Tmall` 不会被当成排除条件。
+
 工具通用于本目录的 `snapshot.sh` / `apply.sh` / `restore.sh`（任何 adb 可达的电视都能跑）。
 `snapshot.sh` 和 `apply.sh` 的备份目录都来自 `backup-dir.sh`。
 
