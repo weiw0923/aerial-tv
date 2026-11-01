@@ -35,6 +35,11 @@ import kotlinx.coroutines.launch
  *                                   until Aerial restarts; for trying an update before a release)
  *   ... --ez update_test_self true  (the same with the APK Aerial runs from: a reinstall, for TVs whose
  *                                   shell cannot write Android/data, as TCL MT5879's)
+ *   ... --ez update_check false     (stop Control Center update checks; a patched build such as the
+ *                                   Tmall MagicBox M31H cannot take an upstream APK)
+ *   ... --es update_repo owner/repo (latest release of that fork: version.txt and aerial-<flavor>.apk;
+ *                                   "default" clears it. On the Tmall MagicBox M31H the built-in
+ *                                   source is weiw0923/aerial-tv; pengchujin/aerial-tv forces upstream)
  * The manifest requires the sender to hold WRITE_SECURE_SETTINGS, which the ADB shell has and
  * ordinary apps cannot get, so no other app on the TV can flip these.
  */
@@ -128,6 +133,18 @@ class ConfigReceiver : BroadcastReceiver() {
             } else null
         }
         if (intent.getBooleanExtra("update_test_self", false)) Updates.testApk = java.io.File(context.applicationInfo.sourceDir)
+        // ... --ez update_check true|false (Control Center update checks; false decouples a patched
+        //                                 build from upstream releases it cannot install)
+        if (intent.hasExtra("update_check")) {
+            Updates.init(context)
+            Updates.setCheckEnabled(context, intent.getBooleanExtra("update_check", true))
+        }
+        // ... --es update_repo <owner/repo> ("default" clears the pref: M31H then uses
+        //                                 weiw0923/aerial-tv; pengchujin/aerial-tv forces upstream)
+        intent.getStringExtra("update_repo")?.let {
+            Updates.init(context)
+            Updates.setUpdateBase(context, it)
+        }
         // ... --ez self_compile true   (reinstall the running APK with its dex metadata now, SelfCompile)
         if (intent.getBooleanExtra("self_compile", false)) app.orchard.tv.update.SelfCompile.runNow(context)
         if (intent.getBooleanExtra("check_update", false)) {

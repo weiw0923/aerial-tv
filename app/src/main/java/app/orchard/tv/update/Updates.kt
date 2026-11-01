@@ -24,6 +24,7 @@ import androidx.core.content.edit
 import app.orchard.tv.BuildConfig
 import app.orchard.tv.guard.GuardSetup
 import app.orchard.tv.system.DiagLog
+import app.orchard.tv.system.TmallM31H
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,6 +49,9 @@ object Updates {
     private const val TAG = "AerialUpdates"
     private const val PREFS = "updates"
     private const val VERSION_URL = "https://aerial.qust.me/download/version.txt"
+
+    /** Fork that carries the M31H build. Used when no update_base pref is set, on that box only. */
+    private const val M31H_UPDATE_REPO = "weiw0923/aerial-tv"
 
     /**
      * A source that delivers less than [STALL_BYTES] in [STALL_MS] is given up for the next one
@@ -81,7 +85,7 @@ object Updates {
         checker = UpdateCheck(
             scope = scope,
             lastSuccess = { prefs.getLong("checked_at", 0) },
-            read = { withContext(Dispatchers.IO) { read(VERSION_URL) } },
+            read = { withContext(Dispatchers.IO) { read(versionUrl()) } },
             save = { latest, checkedAt ->
                 prefs.edit { putString("latest", latest); putLong("checked_at", checkedAt) }
                 available = latest.takeIf { newer(it, current) }
@@ -94,6 +98,42 @@ object Updates {
         }
     }
 
+    /** Decouples this install from upstream releases: Control Center stops checking and any
+     *  known newer version is forgotten. For patched builds official updates cannot replace
+     *  anyway (Tmall MagicBox M31H): they would only nag, download, and fail on the signature.
+     *  The install-session path below is unchanged; this only decides whether a check runs. */
+    fun setCheckEnabled(context: Context, enabled: Boolean) {
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit { putBoolean("check_enabled", enabled); if (!enabled) remove("latest") }
+        if (!enabled) available = null
+        Log.i(TAG, "update checks switched ${if (enabled) "on" else "off"}")
+    }
+
+    /** The configured update source as "owner/repo", the M31H fork when that box has no pref, or null. */
+    private fun updateBase(): String? {
+        val saved = prefs.getString("update_base", null)?.takeUnless { it.isBlank() }
+        if (saved != null) return saved
+        return if (TmallM31H.isTmallM31H()) M31H_UPDATE_REPO else null
+    }
+
+    private fun versionUrl(): String =
+        updateBase()?.let { "https://github.com/$it/releases/latest/download/version.txt" } ?: VERSION_URL
+
+    /** Points update checks and downloads at the given "owner/repo"'s latest release (assets
+     *  version.txt and aerial-<flavor>.apk). "default" or blank clears the pref: the Tmall
+     *  MagicBox M31H then uses weiw0923/aerial-tv, every other device uses upstream.
+     *  Pass pengchujin/aerial-tv to force upstream on the M31H. Downloaded APKs still install
+     *  through the session and dex-metadata path. */
+    fun setUpdateBase(context: Context, base: String?) {
+        val v = base?.trim()?.takeUnless { it.isEmpty() || it == "default" }
+        val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (v == null) p.edit { remove("update_base") } else p.edit { putString("update_base", v) }
+        started = false
+        checker = null
+        init(context)
+        Log.i(TAG, "update source: ${updateBase() ?: "upstream default"}")
+    }
+
     /**
      * [force]: now, however recently it last looked (ConfigReceiver's check_update). Opening Control
      * Center asks with a shorter [maxAgeMs]: that is where the viewer looks for a new version, and a
@@ -104,6 +144,10 @@ object Updates {
         maxAgeMs: Long = UpdateCheck.MAX_AGE_MS,
         networkCameUp: Boolean = false,
     ) {
+        if (started && !prefs.getBoolean("check_enabled", true)) {
+            if (force) Log.i(TAG, "update checks are switched off; not looking")
+            return
+        }
         checker?.check(force, maxAgeMs, networkCameUp, when {
             force -> "forced"
             networkCameUp -> "network"
@@ -490,7 +534,9 @@ object Updates {
             return verify(context, file)
         }
         val name = "aerial-${BuildConfig.FLAVOR}.apk"
-        val sources = listOf(
+        val sources = updateBase()?.let {
+            listOf("https://github.com/$it/releases/latest/download/$name")
+        } ?: listOf(
             "https://aerial.qust.me/download/$name",
             "https://github.com/pengchujin/aerial-tv/releases/latest/download/$name",
         )

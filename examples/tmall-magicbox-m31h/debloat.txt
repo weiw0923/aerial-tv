@@ -1,0 +1,18 @@
+# Tmall MagicBox M31H (YunOS Android 10) — verified neutralization list.
+# getprop on this unit: model/device/name/brand = MagicBox_M_31_H, manufacturer = Tmall.
+# Format: <action> <package> [extra]
+# Actions: uninstall (user 0, data kept) | appops-deny <op> | keep (do nothing, documented)
+#
+# The guard killer: platform-signed monitor that FORCE_STOP_PACKAGES's third-party
+# launchers at standby ("kill 3rd processName" in its own log). Without removing it,
+# every protective layer dies with the guard each standby.
+uninstall com.ott.minimonitor
+# The desktop police: force-stops third-party launchers at standby as well, and
+# re-fronts the stock portal against every grab.
+uninstall com.yunos.tvmgr
+# The wake catcher: YunOS's SCREEN_ON policy starts its HomeActivity by hardcoded
+# component; a system_server crash (soft-brick until power cycle) if it is absent.
+# NEVER remove. Only neuter its boot broadcast:
+appops-deny com.youku.taitan.tv RUN_ANY_IN_BACKGROUND
+appops-ignore com.youku.taitan.tv RUN_IN_BACKGROUND
+keep com.youku.taitan.tv

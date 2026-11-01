@@ -37,6 +37,8 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     private fun onBoot(context: Context, action: String) {
+        // No-op except on the Tmall MagicBox M31H (StandbyRevivalReceiver.arm).
+        StandbyRevivalReceiver.arm(context)
         GuardSetup.ensureEnabled(context)
         if (action == Intent.ACTION_LOCKED_BOOT_COMPLETED) return
         GuardSetup.rescanIfMissing(context)
