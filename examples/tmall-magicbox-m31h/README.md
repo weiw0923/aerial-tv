@@ -63,13 +63,10 @@ adb shell getprop ro.build.version.release
 ## 复现步骤
 
 ```bash
-# 合进 main 之前，示例在本分支，不在默认的 main 上：
-git clone -b cursor/m31h-on-upstream-661a https://github.com/weiw0923/aerial-tv && cd aerial-tv/examples/tmall-magicbox-m31h
-# 合进 main 之后改为：
-# git clone https://github.com/weiw0923/aerial-tv && cd aerial-tv/examples/tmall-magicbox-m31h
+git clone https://github.com/weiw0923/aerial-tv && cd aerial-tv/examples/tmall-magicbox-m31h
 TV=<盒子IP>:5555 ./snapshot.sh          # 1. 快照（与 apply.sh 共用 backup-dir.sh；默认仓库 backups/，可用 BACKUP_DIR 重定向；勿提交）
 TV=<盒子IP>:5555 ./apply.sh             # 2. 除杀手 + 掐优酷开机广播
-# 3. 安装 Aerial（见仓库 README 的安装命令；本分支的构建含天猫魔盒 M31H 的守护补丁）
+# 3. 安装 Aerial（见仓库 README 的安装命令；main 上的构建含天猫魔盒 M31H 的守护补丁）
 TV=<盒子IP>:5555 ./restore.sh           # 需要回出厂状态时
 ```
 
