@@ -440,6 +440,8 @@ class HomeGuardService : AccessibilityService() {
         // The overlay hides this firmware's stock splash on every SCREEN_ON. Elsewhere it would
         // cover the picture the viewer is looking at whenever Home is brought back.
         if (!TmallM31H.isTmallM31H()) return
+        // Overlay permission checks exist from Android 6.0; the M31H runs Android 10.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         if (wakeCover != null || !Settings.canDrawOverlays(this)) return
         val wm = getSystemService<WindowManager>() ?: return
         // The cover wears Aerial's own baked wallpaper (the exact picture Home shows), so the
