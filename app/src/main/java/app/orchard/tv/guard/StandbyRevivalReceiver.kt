@@ -31,7 +31,7 @@ class StandbyRevivalReceiver : BroadcastReceiver() {
             return
         }
         arm(context)
-        val pm = context.getSystemService(PowerManager::class.java) ?: return
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
         if (!GuardSetup.isUserUnlocked(context)) return
         if (pm.isInteractive) return
         // Screen off: the heartbeat must be running. ensureEnabled re-enables the guard when the
@@ -48,7 +48,9 @@ class StandbyRevivalReceiver : BroadcastReceiver() {
 
         fun arm(context: Context) {
             if (!TmallM31H.isTmallM31H()) return
-            val am = context.getSystemService(AlarmManager::class.java) ?: return
+            // Doze-proof alarms exist from Android 6.0; the M31H runs Android 10.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+            val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
             val pi = pending(context, PendingIntent.FLAG_UPDATE_CURRENT)
             val at = System.currentTimeMillis() + 60_000L
             // canScheduleExactAlarms exists from Android 12. Before that exact alarms need no grant.
@@ -66,7 +68,7 @@ class StandbyRevivalReceiver : BroadcastReceiver() {
 
         /** Drops a pending alarm left by a build that scheduled one on every device. */
         fun cancel(context: Context) {
-            val am = context.getSystemService(AlarmManager::class.java) ?: return
+            val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
             val pi = PendingIntent.getBroadcast(
                 context,
                 REQUEST,
